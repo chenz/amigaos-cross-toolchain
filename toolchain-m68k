@@ -216,7 +216,7 @@ def touch_genfiles(dst):
       touch(h_file)
 
 
-def build():
+def build(**kwargs):
   for var in environ.keys():
     if var not in ['_', 'LOGNAME', 'HOME', 'SHELL', 'TMPDIR', 'PWD']:
       del environ[var]
@@ -238,8 +238,9 @@ def build():
         name = path.basename(url)
       fetch(name, url)
 
-  execute('git', 'submodule', 'init');
-  execute('git', 'submodule', 'update');
+  if kwargs.get("update_submodules", True):
+    execute('git', 'submodule', 'init');
+    execute('git', 'submodule', 'update');
 
   add_site_dir('{host}')
 
@@ -466,7 +467,7 @@ def build():
   install_tools()
 
 
-def clean():
+def clean(**kwargs):
   rmtree('{stamps}')
   rmtree('{sources}')
   rmtree('{host}')
@@ -501,7 +502,7 @@ def read_sdk(filename):
   return (info, files)
 
 
-def list_sdk():
+def list_sdk(**kwargs):
   print 'Available SDKs:'
 
   for filename in find('{top}/sdk', include=['*.sdk']):
@@ -610,7 +611,7 @@ def process_sdk(sdk, dirname, files):
           copy(source, path.join('{target}/os-lib/sfd', name))
 
 
-def install_sdk(*names):
+def install_sdk(*names, **kwargs):
   environ['PATH'] = ":".join([path.join('{target}', 'bin'),
                               path.join('{host}', 'bin'),
                               environ['PATH']])
@@ -635,8 +636,8 @@ def install_sdk(*names):
     process_sdk(name, basename, files)
 
 
-def test():
-  install_sdk('mmu', 'mui')
+def test(**kwargs):
+  install_sdk('mmu', 'mui', **kwargs)
 
   environ['PATH'] = ":".join([path.join('{target}', 'bin'),
                               environ['PATH']])
@@ -674,6 +675,8 @@ if __name__ == "__main__":
                       help='installation directory')
   parser.add_argument('--threads', type=str, default='1',
                       help='number of threads for make')
+  parser.add_argument('--dont-update-submodules', dest='update_submodules', default=True, action='store_false',
+                      help="don't update git submodules before building")
   args = parser.parse_args()
 
   setvar(top=path.abspath(path.dirname(sys.argv[0])),
@@ -714,5 +717,6 @@ if __name__ == "__main__":
   if not path.exists('{target}'):
     mkdir('{target}')
 
+  kwargs = dict(update_submodules = args.update_submodules)
   action = args.action.replace('-', '_')
-  globals()[action].__call__(*args.args)
+  globals()[action].__call__(*args.args, **kwargs)
