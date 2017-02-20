@@ -37,6 +37,14 @@ URLS = \
    ('http://mail.pb-owl.de/~frank/vbcc/current/vbcc_target_m68k-amigaos.lha',
     'vclib.lha')]
 
+MPFR_VER = '3.1.5'
+GMP_VER = '6.1.2'
+MPC_VER = '1.0.3'
+
+HOSTLIB_URLS = \
+  ['https://gmplib.org/download/gmp/gmp-{}.tar.bz2'.format(GMP_VER),
+   'http://www.mpfr.org/mpfr-current/mpfr-{}.tar.bz2'.format(MPFR_VER),
+   'ftp://ftp.gnu.org/gnu/mpc/mpc-{}.tar.gz'.format(MPC_VER)]
 
 MULTILIB = [('', []),
             ('libb', ['-fbaserel', '-DSMALL_DATA']),
@@ -217,11 +225,17 @@ def touch_genfiles(dst):
 
 
 def build(**kwargs):
-  for var in environ.keys():
-    if var not in ['_', 'LOGNAME', 'HOME', 'SHELL', 'TMPDIR', 'PWD']:
-      del environ[var]
-
-  PATH = ['/usr/bin', '/bin']
+  build_hostlibs = kwargs.pop("build_hostlibs", False)
+  preserve_env = kwargs.pop("preserve_env", False)
+  update_submodules = kwargs.pop("update_submodules", True)
+  
+  if preserve_env:
+    PATH = environ["PATH"].split(":")
+  else:
+    for var in environ.keys():
+      if var not in ['_', 'LOGNAME', 'HOME', 'SHELL', 'TMPDIR', 'PWD']:
+        del environ[var]
+    PATH = ['/usr/bin', '/bin']
 
   if fnmatch(platform.system(), 'MSYS_NT*'):
     PATH.append('/usr/bin/core_perl') # pod2text, pod2man
@@ -231,14 +245,19 @@ def build(**kwargs):
   environ['TERM'] = 'xterm'
 
   with cwd('{archives}'):
-    for url in URLS:
+    def f(url):
       if type(url) == tuple:
         url, name = url[0], url[1]
       else:
         name = path.basename(url)
       fetch(name, url)
-
-  if kwargs.get("update_submodules", True):
+    for url in URLS:
+      f(url)
+    if build_hostlibs:
+      for url in HOSTLIB_URLS:
+        f(url)
+      
+  if update_submodules:
     execute('git', 'submodule', 'init');
     execute('git', 'submodule', 'update');
 
@@ -249,9 +268,9 @@ def build(**kwargs):
   user's path that could shadow the original one.
   """
   if platform.system() == 'Darwin':
-    CC, CXX = 'clang', 'clang++'
+    CC, CXX = environ.get('CC', 'clang'), environ.get('CXX', 'clang++')
   else:
-    CC, CXX = 'gcc', 'g++'
+    CC, CXX = environ.get('CC', 'gcc'), environ.get('CXX', 'g++')
 
   CC = find_executable(CC)
   CXX = find_executable(CXX)
@@ -366,6 +385,37 @@ def build(**kwargs):
   CC = ' '.join([CC, ARCH, '-std=gnu11'])
   CXX = ' '.join([CXX, ARCH, '-std=gnu++11'])
 
+  compiler_host = 'i686-linux-gnu'
+  
+  if build_hostlibs:
+    unpack('{gmp}')
+    unpack('{mpfr}')
+    unpack('{mpc}')
+    with env(CC=CC, CXX=CXX, CFLAGS='-g -O2 -Wall', CXXFLAGS='-g -O2 -Wall'):
+      configure('{gmp}',
+                '--prefix={host}',
+                '--host=' + compiler_host,
+                '--disable-shared')
+      make('{gmp}')
+      make('{gmp}', 'install')
+
+      configure('{mpfr}',
+                '--prefix={host}',
+                '--host=' + compiler_host,
+                '--disable-shared',
+                '--with-gmp={host}')
+      make('{mpfr}')
+      make('{mpfr}', 'install')
+
+      configure('{mpc}',
+                '--prefix={host}',
+                '--host=' + compiler_host,
+                '--disable-shared',
+                '--with-gmp={host}',
+                '--with-mpfr={host}')
+      make('{mpc}')
+      make('{mpc}', 'install')
+    
   """
   Older gcc compilers (i.e. 2.95.3, 3.4.6 and 6) and binutils have to be tricked
   into thinking that they're being compiled on Linux IA-32 machine. Theirs
@@ -386,14 +436,19 @@ def build(**kwargs):
   patch('{ixemul}')
 
   with env(CC=CC, CXX=CXX, CFLAGS='-g -O2 -Wall', CXXFLAGS='-g -O2 -Wall'):
-    configure('{gcc}',
-              '--prefix={target}',
-              '--host=i686-linux-gnu',
-              '--build=i686-linux-gnu',
-              '--target=m68k-amigaos',
-              '--enable-languages=c,c++',
-              '--enable-version-specific-runtime-libs',
-              '--with-headers={sources}/{ixemul}/include',
+    args = ['{gcc}',
+            '--prefix={target}',
+            '--host=i686-linux-gnu',
+            '--build=i686-linux-gnu',
+            '--target=m68k-amigaos',
+            '--enable-languages=c,c++',
+            '--enable-version-specific-runtime-libs',
+            '--with-headers={sources}/{ixemul}/include']
+    if build_hostlibs:
+      args += ['--with-gmp={host}',
+               '--with-mpfr={host}',
+               '--with-mpc={host}']
+    configure(*args,
               from_dir='{submodules}/{gcc}')
     touch_genfiles('{submodules}/{gcc}')
     make('{gcc}', 'all-gcc', threads='-j{numThreads}', 
@@ -677,6 +732,10 @@ if __name__ == "__main__":
                       help='number of threads for make')
   parser.add_argument('--dont-update-submodules', dest='update_submodules', default=True, action='store_false',
                       help="don't update git submodules before building")
+  parser.add_argument('--preserve-env', dest='preserve_env', default=False, action='store_true',
+                      help="don't reset environment variables before building")
+  parser.add_argument('--build-hostlibs', dest='build_hostlibs', default=False, action='store_true',
+                      help="build additional libraries for the compiler host, such as gmp, mpfr and mpc")
   args = parser.parse_args()
 
   setvar(top=path.abspath(path.dirname(sys.argv[0])),
@@ -701,6 +760,9 @@ if __name__ == "__main__":
          binutils='binutils-{binutils_ver}',
          gcc='gcc-{gcc_ver}',
          gpp='g++-{gcc_ver}',
+         gmp='gmp-{}'.format(GMP_VER),
+         mpfr='mpfr-{}'.format(MPFR_VER),
+         mpc='mpc-{}'.format(MPC_VER),
          patches=path.join('{top}', 'patches'),
          stamps=path.join('{top}', '.build-m68k', 'stamps'),
          build=path.join('{top}', '.build-m68k', 'build'),
@@ -717,6 +779,8 @@ if __name__ == "__main__":
   if not path.exists('{target}'):
     mkdir('{target}')
 
-  kwargs = dict(update_submodules = args.update_submodules)
+  kwargs = dict(update_submodules = args.update_submodules,
+                preserve_env = args.preserve_env,
+                build_hostlibs = args.build_hostlibs)
   action = args.action.replace('-', '_')
   globals()[action].__call__(*args.args, **kwargs)
